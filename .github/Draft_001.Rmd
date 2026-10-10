@@ -1,0 +1,720 @@
+---
+title: "Building a Prediction Model"
+subtitle:  "Using Regression Models to Predict Soil Moisture in Southeaster United States"
+author: "Zeshen Li *[UCSB Winter 2026]*"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+  pdf_document:
+    toc: true
+    
+
+---
+
+
+
+```{r setup, include=FALSE}
+library(readxl)
+library(tidyverse)
+library(tidymodels)
+library(knitr)
+library(ISLR)
+library(ISLR2)
+library(discrim)
+library(poissonreg)
+library(corrr)
+library(corrplot)
+library(klaR)
+library(kknn)
+library(pROC)
+library(janitor)
+
+tidymodels_prefer()
+
+
+
+knitr::opts_chunk$set(echo = TRUE, message = FALSE,
+                      warning = FALSE)
+
+# indent settings
+indent1 = '    '
+indent2 = '        '
+indent3 = '            '
+
+
+```
+
+
+
+## Introduction
+
+
+### Research background and aim of the project
+
+The Southeastern United States contains many lakes, streams, and reservoirs that serve as important sources of drinking water and support recreational, agricultural, and ecological activities. The region also has a large number of impounded rivers. Historically, large reservoir systems in the southeast have been managed for flood control, commerce, hydropower generation, recreation, and drinking water supply. In addition, urban areas and new developments increasingly use retention and detention ponds to control stormwater runoff from nonpoint sources.
+
+While these water management strategies are intended to conserve and regulate water resources, their implementation—combined with the naturally water-rich conditions of the region—has produced several unintended hydrological consequences. One such consequence is the observed increase in soil moisture levels across parts of the Southeast.
+
+This research project aims to analyze the influence of selected streamflow components on soil moisture dynamics using statistical and computational modeling approaches derived from the PRMS (Precipitation–Runoff Modeling System). By examining these relationships, the study seeks to construct predicting models that are able to predict soil moisture values based on existing streamflow components and statistics collected through local hydrological observation station, and provide insights into potential hydrological and geomorphological changes in the Southeastern United States, including the identification of areas that may be susceptible to soil cracking, erosion, or other forms of terrain instabilities resulting from persistent soil saturation. 
+
+<center>
+![Fig.1 surface soil moisture of the southeastern United States. It is known that various factors on the ground, including high soil moisture, play important roles in terrain instabilities. Source:https://www.drought.gov/data-maps-tools/groundwater-and-soil-moisture-conditions-grace-data-assimilation](images/surface-soil-moisture-march-2026.png){width="700"}
+</center>
+<br>
+
+### Introduction to a hydrological modeling system
+
+Before we introducing the data used for this research project and learn its statistical implications, we need to introduce the PRMS. PRMS is the shorthand for 'Precipitation Runoff Modeling System,' a modeling system developed by the USGS(United States Geological Survey) to 'evaluate the response of various combinations of climate and land use on streamflow and general watershed hydrology.'
+
+*[the official page for PRMS: https://www.usgs.gov/software/precipitation-runoff-modeling-system-prms ]*
+
+<center>
+![Fig.2 the conceptual structure of the Precipitation-Runoff Modeling System Soil Zone. Labelled originally as Figure 2. in the PRMS instruction manual, it shows how the model divided the soil zone into various components for statistical recordings and analysis ](images/concept.png){width="700"}
+</center>
+<br>
+
+The latest version of the PRMS instruction manual provides a detailed description of the model's concepts and its abstract components, as shown in Figure 3. This figure depicts the generalized soil zone model from a hydrological perspective, which is stratified into three layers: the Preferential-flow reservoir, the Capillary reservoir, and the Gravity reservoir. Water originating from precipitation (such as rain) or surface flow can migrate between these layers through processes such as infiltration, transpiration and evaporation. An important conceptual distinction worth noting is that in the PRMS instruction manual **(https://pubs.usgs.gov/tm/6b7/pdf/tm6-b7.pdf)**, the term "reservoir" refers to the conceptual water-storage mechanism in the PRMS model and not to a physical pond or lake used for the storage and regulation of water. This project focuses on only one specific subcategory: **capillary reservoirs**. In simpler terms, **capillary reservoirs** represent water held within the soil matrix by capillary forces, appearing to remain relatively static. The water may either ascend to the surface through evaporation or percolate downward to join the groundwater. To illustrate, a hypothetical mole might drown in groundwater, yet would only moist its nose within the capillary reservoir.
+
+
+
+### Source data and its issues
+
+We now load the data imported from the source on official USGS government website. The link to the webpage is provided below:
+https://www.sciencebase.gov/catalog/item/597b37bbe4b0a38ca27563d4.
+
+<center>
+![Fig.3 The data zip file itself is among the numerous files located under a child item, 'Precipitation Runoff Modeling System Output Data from Hydrologic Simulations of the Southeastern United States for Historical and Future Conditions', of the parent data set 'Model Input and Output for Hydrologic Simulations of the Southeastern United States for Historical and Future Conditions.' They document the input to and output from the Precipitation Runoff Modeling System models developed for a U.S. Geological Survey Scientific Investigations Report LaFontaine and others (2019). ](images/data_screenshot_from_the_original_website.png){width="400"}
+</center>
+<br>
+
+This dataset belongs to the historical and potential future simulations of streamflow statistics for the southeastern United States; specifically, **it is part of the 13 historical climate simulations datasets (from the southeastern United States) for the period 1950-2005**, using statistically downscaled general circulation model (GCM) output from the Coupled Model Intercomparison Project (CMIP5).
+
+Of the 13 datasets, only this dataset is selected for this project.
+
+*   Name of this dataset's root zip file: IPSL-CM5A-MR_historical_r1i1p1.zip
+
+    Meaning: the data belongs to one of the 13 'model output files for historical GCM scenario', and was collected by Institut Pierre-Simon Laplace in France.
+
+
+*   Name of this dataset: prms_summaryDyn
+
+    Meaning: 'summary dynamics' for the collected PRMS data
+
+
+We first examine the format and contents of the original excel spreadsheet, and immediately notice several uncommon features in it (likely attributable to outdated data recording conventions):
+
+<center>
+![Fig.3 screenshot of the problematic original spreadsheet](images/original_csv.png){width="400"}
+</center>
+<br>
+
+*   1.The second row consisted entirely of units expressed as text, rather than numerical data, which could bring complications to calculations in R.
+    
+*   2.Numerous cells in the spreadsheet contained the exact value -999, particularly in the last column, `runoff_cfs`. Given that runoff_cfs is defined as the streamflow gage observations in cubic feet per second, negative values are physically impossible. We therefore deduced that here -999 likely served as a placeholder for missing or null values, which is now often considered a outdated practice.
+
+The second row was therefore manually deleted outside of RStudio to prevent any possible confusions. The resulting file, prms_summaryDyn_new.xlsx, was subsequently imported for further analysis. These remaining issues were addressed within the RStudio environment. Unit information and other relevant metadata were documented and stored in a separate file named prms_attributes.xlsx, which will be submitted along with the final project.
+
+After the spreadsheet format was updated, we import and check the data.
+
+
+
+## 1. Exploratory Data Analysis
+
+### 1.01 Cleaning Data and choosing variables of interest
+
+We first import the data, and tidy it by removing rows and columns that does not fit the modern excel spreadsheet format.
+
+```{r}
+## data showcases
+surfaceWaterStat <- read_csv('data/prms_summaryDyn_new.csv')
+surfaceWaterStat %>%
+  head()
+
+### identify which columns contain only zeros
+which(colSums(surfaceWaterStat == 0) 
+      == nrow(surfaceWaterStat)
+)
+
+### remove those zero columns and create a new dataframe
+### also remove runoff_cfs, whose ancient recording conventions contains numerous -999 as placeholder
+### also remove Date, so the correlation plot can exist normally 
+surfaceWaterStat_nonzero <- surfaceWaterStat %>%
+    select(where(~ any(. != 0)))
+
+surfaceWaterStat_nonzero$runoff_cfs <- NULL
+surfaceWaterStat_nonzero$Date <- NULL
+
+summary(surfaceWaterStat_nonzero)
+ncol(surfaceWaterStat_nonzero)
+
+
+```
+
+We noticed that the values of most variables, especially those recorded in inches, were very small. Additionally, `ncol()` shows that there are 43 columns in the data. excluding the first column('Date') leaves us 42 non-zero columns, all of which are numerical variables. We now need to select an appropriate response variable that suits our goal of representing the readings of local capillary reservoirs. After checking the attributes index, we found a variable, `basin_soil_moist`, defined as the 'Basin area-weighted average capillary reservoir storage', measured in inches. This variable represents the mean water-holding capacity of the local soil and thus is the ideal candidate for the response variable. Since we are also interesting in the potential drivers to the local soil moisture's dynamics, we attempt to identify streamflow components that, according to the conceptual structure of the modeling system, may have potential significant effects on capillary reservoir storage.
+
+<center>
+![Fig.2 the conceptual structure of the Precipitation-Runoff Modeling System Soil Zone. Labelled originally as Figure 2. in the PRMS instruction manual, it shows how the model divided the soil zone into various components for statistical recordings and analysis ](images/concept.png){width="700"}
+</center>
+<br>
+
+We present Figure 2 once again. As can be seen from fig.2 the two primary pathways for capillary reservoir to shed off excess water that exceeds its capacity into the air are: 1. evaporation and transpiration (often collectively abbreviated as *ET*, i.e., evapotranspiration) and 2. infiltration excess. Infiltration excess comes from the rate of rainfall or snowmelt that is greater than the infiltration capacity.  Since this process is more directly associated with the preferential-flow reservoir than with the capillary reservoir we are concerned about, and and varies greatly due to local conditions, which may introduce noises and outliers to the data, we choose to focus on evaporation and transpiration processes instead, which bring us to two new key variables: `basin_potet` and `basin_actet`.
+
+*   `basin_potet`: Basin area-weighted average potential evapotranspiration (ET).
+*   `basin_actet`: Basin area-weighted average actual evapotranspiration.
+
+
+```{r}
+ggplot(surfaceWaterStat_nonzero, aes(x = basin_actet, y = basin_soil_moist)) +
+  geom_point(alpha = 0.4, color = "orange") +
+  geom_smooth(method = "loess", color = "steelblue")
+
+ggplot(surfaceWaterStat_nonzero, aes(x = basin_potet, y = basin_soil_moist)) +
+  geom_point(alpha = 0.4, color = "orange") +
+  geom_smooth(method = "loess", color = "steelblue")
+```  
+
+Initial attempts to identify direct correlations between either potential or actual evapotranspiration rate and capillary reservoir storage proved unfruitful. However, when we construct a ratio of actual to potential evapotranspiration (basin_actet / basin_potet):
+```{r}
+df_et <- surfaceWaterStat_nonzero %>%
+  mutate(moisture_ratio = basin_soil_moist / max(basin_soil_moist),
+         et_efficiency = basin_actet / basin_potet)
+
+ggplot(df_et, aes(x = et_efficiency, y = basin_soil_moist)) +
+  geom_point(alpha = 0.4, color = "olivedrab") +
+  geom_smooth(method = "loess", color = "orange") + 
+  labs(title = "soil moisture vs. evapotranpiration rate",
+       x = "actual evapotranpiration / potential evapotranpiration ratio",
+       y = "soil moisture (in inches)"
+       )
+```  
+
+We are able to see a strong, positive, yet non-linear correlation, with a high amount of spread of variances across the curve, indicating that as actual evapotranspiration rate approaches potential evapotranspiration rate, soil moisture shows an accelerated rate of increase.
+
+
+
+### 1.02 Finding the predictors
+
+Selecting the response variable alone is sadly not enough, and merely going through the definitions of variables in the attributes index is insufficient to narrow down which of them are appropriate to be include in the analysis for basin_soil_moist as we recall from Fig.3 that the capillary reservoir is just one of the three reservoirs in the model and does not came into contact with a lot of model components, such as Dunnian surface runoff. Therefore we need to determine which of the 42 non-zero variables have sufficient correlations with basin_soil_moist. 
+```{r}
+corr_trix_1 <- cor(surfaceWaterStat_nonzero)
+corrplot(corr_trix_1, 
+         order = 'AOE', 
+         col = COL2("PiYG")
+         )
+
+```
+
+The variables are packed together, so lets export the graph with higher resolution and import it back to the document:
+
+<center>
+![Fig.4 the full correlation plot ](images/Rplot_1.png){width="700"}
+</center>
+<br>
+
+The correlation plot does the job nicely. We also notice there are way too many variables that have little to do with `basin_soil_moist`.
+
+Previously we stated our interest in focusing on finding the best predictors for `basin_soil_moist`, based on the assumption that as actual evapotranspiration rate approaches potential evapotranspiration rate, soil moisture shows an accelerated rate of increase. Based on this correlation plot, we managed to find correlations that stand out towards these 3 variables:
+
+*    for basin_actet: there are moderately positive correlations between it and basin_dprst_evap, as well as basin_perv_et;
+*    for basin_potet: there are moderately positive correlations between it and basin_swrad basin_tmin, as well as basin_tmax;
+*    for basin_soil_moist: there are moderately positive correlation between it and basin_soil_rechr, and a highly degative correlation between it and basin_tmax.
+
+Although numerous positive correlations can be identified, this seemingly complex relationship can be explained by reviewing that in the conceptual structure of the modeling system(Fig.2), water originating from precipitation (such as rain) or surface flow can migrate between layers through processes such as infiltration, transpiration and evaporation, This mechanism accounts for the observation that while correlations exist between basin_soil_moist (a variable representing capillary reservoirs) and other variables with little direct connection to evapotranspiration—such as various forms of surface storage—these correlations tend to be only weakly positive. We should set aside these only slightly related correlations and instead focusing on the stronger, more important correlations.
+
+
+### 1.03 Describing the predictors
+
+The variables that I will be using in my model recipe are as following:
+*    `basin_potet`: Basin area-weighted average potential ET(evapotranspiration).
+*    `basin_actet`: Basin area-weighted average actual ET.
+*    `basin_swrad`: Basin area-weighted average shortwave radiation.
+*    `basin_tmin`: Basin area-weighted average minimum air temperature.
+*    `basin_tmax`: Basin area-weighted average maximum air temperature.
+*    `basin_dprst_evap`: Basin area-weighted average evaporation from surface-depression storage.
+*    `basin_perv_et`: Basin area-weighted average ET from capillary reservoirs.
+*    `basin_soil_rechr`: Basin area-weighted average storage for recharge zone; upper portion of capillary reservoir where both evaporation and transpiration occurs.
+*    `basin_soil_moist`: Basin area-weighted average capillary reservoir storage.
+
+```{r}
+surfaceWaterStat_nonzero <- surfaceWaterStat_nonzero %>% 
+  select(c("basin_potet", "basin_actet", "basin_dprst_evap",  "basin_perv_et", "basin_swrad", "basin_tmax", "basin_tmin", "basin_soil_rechr", "basin_soil_moist")) %>% 
+  clean_names()
+
+```
+
+We remove the unwanted variables and the final dataset is now complete.
+
+### 1.04 Exploring the features of predictors
+
+We now plot a histogram to see the frequency distribution of the soil moisture.
+```{r}
+ggplot(surfaceWaterStat_nonzero, aes(x = basin_soil_moist)) +
+  geom_histogram(bins = 40, fill = "steelblue", color = "yellow", alpha = 0.5) +
+  labs(title = "frequency of soil moisture states",
+       x = "soil moisture (in inches)") +
+  theme_light()
+``` 
+
+As seen above, the histogram with two distinct peaks is slightly left-skewed, which indicates that conditions that leads to high soil moisture were happening more frequently in the region, and that local hydrological variabilities across the year, such as seasonal changes or the presence of intermittent rivers, may explain the difference in peak soil moisture readings throughout the year. How interesting and complicated!
+
+We also plot two histograms to see the frequency distribution of potential or actual evapotranspiration rates.
+```{r}
+ggplot(surfaceWaterStat_nonzero, aes(x = basin_potet)) +
+  geom_histogram(bins = 40, fill = "orange", color = "red", alpha = 0.4) +
+  theme_light()
+
+ggplot(surfaceWaterStat_nonzero, aes(x = basin_actet)) +
+  geom_histogram(bins = 40, fill = "orange", color = "red", alpha = 0.4) +
+  theme_light()
+``` 
+
+As seen above, the histogram for potential evapotranspiration rate has two distant peaks, which are roughly equal in heights. This may suggest that in theory, high and low evapotranspirations should share similar occurences in the region. The histogram for actual evapotranspiration rate, however, shows a right-skewed graph with only one peak; the actual rate rarely reaches 0.10, let alone the higher levels, such a 0.16 and above, that the "potential" distribution frequently hits, which possibly inducates a water-limited environment where the energy to move water exists, but the available water does not.
+
+
+
+## 2. Setting Up Models
+
+### 2.01 Data split 
+The first step we have to take before fitting any models is splitting our data into a training and testing set. The training set will be used to train our models. The testing set acts as a test in the sense that our models will not be able to train on that data. By splitting our data into testing and training sets, we avoid over-fitting because the model is not using all of the available data to learn. 
+
+The split I have chosen is a 80/20 split, which means 80% of the data will go towards the training set and 20% of the data will go towards the testing set. This way, most of our data is being used to train the model and we would still have an adequate amount of data to test the model on. Also, the split is stratified on the variable basin_soil_moist, which is what we are aiming to 'predict' based on the evapotranspiration rate ratio, to ensure that both the training and the testing data have an equal distribution of basin_soil_moist.
+```{r}
+## 80%
+set.seed(123)
+stat_split <- initial_split(
+  surfaceWaterStat_nonzero, 
+  prop=0.8, 
+  strata=basin_soil_moist
+  )
+stat_train <- training(stat_split)
+stat_test <- testing(stat_split)
+
+```
+
+We now conduct a simple verification on the splitting ratio.
+```{r}
+nrow(stat_train)/nrow(stat_test)
+nrow(stat_test)/nrow(stat_train)
+
+```
+
+The result shows roughly 4 and 0.25, which means we did the 80/20 split correctly.
+
+
+
+### 2.02 Building recipe and K-fold cross validation
+```{r}
+# creating recipte
+capillaryReservoirs_recipe <- recipe(basin_soil_moist ~ basin_actet + basin_potet + basin_dprst_evap + basin_perv_et + basin_swrad + basin_tmin + basin_tmax + basin_soil_rechr,
+                                     data = stat_train) %>%
+  step_dummy(all_nominal(), one_hot = TRUE) %>%
+  step_mutate( et_efficiency = 
+                 basin_actet / basin_potet) %>%
+  step_center(all_predictors()) %>% 
+  step_scale(all_predictors())
+
+# creating folds
+stat_folds <- vfold_cv(stat_train, v = 10, strata = basin_soil_moist)
+```
+
+We will now bring together our predictors and our response variable to build our recipe which we will use for all the models, and stratify our cross validation on our response variable, basin_soil_moist.
+
+previously we managed to find correlations that stand out towards 3 variables that we care the most:
+
+*    for basin_actet: there are moderately positive correlations between it and basin_dprst_evap, as well as basin_perv_et;
+*    for basin_potet: there are moderately positive correlations between it and basin_swrad basin_tmin, as well as basin_tmax;
+*    for basin_soil_moist: there are moderately positive correlation between it and basin_soil_rechr, and a highly degative correlation between it and basin_tmax.
+
+Therefore, we will be using 8 out of our 51 predictor variables in our recipe, excluding Date, which is not a numerical value. while it is unreasonable to claim the excluded 43 predictors exert no influence whatsoever on the selected variables, we have learned both from the conceptual structure and the correlation plot that the correlations these variables provided are simply nor strong enough.
+
+
+
+
+
+
+## 3. Model Building
+
+
+
+### 3.01 Fitting the model
+
+For each model, we must execute the following steps to perform the fitting process:
+
+1. Specify the specific model, the parameters requiring tuning, the underlying model engine, and the execution mode.
+
+2. Configure a Workflow for the model, integrating the model object with the preprocessing Recipe.
+
+3. Define the value ranges for the parameters and specify the number of levels to be included for each parameter.
+
+4. Specify the workflow to be tuned, the number of folds for K-fold cross-validation, and the tuning grid defined for the selected parameters.
+
+5. Save the tuned model to an RDS file to avoid the need to rerun the model in the future; subsequently, reload the previously saved file.
+
+6. Sort the results in ascending order by mean to identify the lowest RMSE value achievable by the model; next, perform a slicing operation to extract only this minimum RMSE value. Finally, store this RMSE value in a variable for use in subsequent comparative analyses.
+
+```{r}
+# 1. KNN 
+knn_model_001 <- nearest_neighbor(
+  neighbors = tune()
+) %>% 
+  set_mode("regression") %>% 
+  set_engine("kknn")
+
+workflow_knn001 <- workflow() %>%
+  add_model(knn_model_001) %>%
+  add_recipe(capillaryReservoirs_recipe)
+
+knn_grid <- grid_regular(
+  neighbors(range = c(10, 80)),
+  levels = 5
+)
+
+knn_tune <- tune_grid(
+  workflow_knn001,
+  resamples = stat_folds,
+  grid = knn_grid,
+  metrics = metric_set(rmse, mae, rsq)
+)
+
+write_rds(knn_tune, file = "data/tuned_models/knn.rds")
+knn_tuned <- read_rds(file = "data/tuned_models/knn.rds")
+
+knn_rmse <- show_best(knn_tuned, metric = "rmse", n = 1)$mean
+
+# 2. gradient boosted tree, 
+boost_model_002 <- boost_tree(
+  trees = tune(),
+  min_n = tune(),
+  learn_rate = tune()
+) %>%
+  set_engine("xgboost") %>%
+  set_mode("regression")
+
+
+workflow_boost002 <- workflow() %>%
+  add_model(boost_model_002) %>%
+  add_recipe(capillaryReservoirs_recipe)
+
+boost_grid <- grid_regular(
+  trees(range = c(200, 500)),
+  min_n(range = c(2, 20)),
+  learn_rate(range = c(0.01,0.1)),
+  levels = 5
+)
+
+boost_tune <- tune_grid(
+  workflow_boost002,
+  resamples = stat_folds,
+  grid = boost_grid,
+  metrics = metric_set(rmse, mae, rsq)
+)
+
+write_rds(boost_tune, file = "data/tuned_models/boost.rds")
+boost_tuned <- read_rds(file = "data/tuned_models/boost.rds")
+
+boost_rmse <- show_best(boost_tuned, metric = "rmse", n = 1)$mean
+
+
+# 3. support vector machines, 
+support_vec_model_003 <- svm_linear(
+  cost = tune()
+) %>%
+  set_engine("kernlab") %>%
+  set_mode("regression")
+
+workflow_support003 <- workflow() %>%
+  add_model(support_vec_model_003) %>%
+  add_recipe(capillaryReservoirs_recipe)
+
+svm_grid <- grid_regular(
+  cost(range = c(-4, 1), trans = log10_trans()),
+  levels = 10
+)
+
+
+svm_tune <- tune_grid(
+  workflow_support003,
+  resamples = stat_folds,
+  grid = svm_grid,
+  metrics = metric_set(rmse, mae, rsq)
+)
+
+write_rds(svm_tune, file = "data/tuned_models/svm.rds")
+svm_tuned <- read_rds(file = "data/tuned_models/svm.rds")
+
+svm_rmse <- show_best(svm_tuned, metric = "rmse", n = 1)$mean
+
+
+# 4. a neural network. 
+neural_model_004 <- mlp(
+  hidden_units = tune(),
+  penalty = tune(),
+  epochs = tune()
+) %>%
+  set_engine("nnet") %>%
+  set_mode("regression")
+
+
+workflow_neural004 <- workflow() %>%
+  add_model(neural_model_004) %>%
+  add_recipe(capillaryReservoirs_recipe)
+
+neural_grid <- grid_regular(
+  hidden_units(range = c(1, 10)),
+  penalty(range = c(-3, -1)),
+  epochs(range = c(20, 100)),
+  levels = 5
+)
+
+neural_tune <- tune_grid(
+  workflow_neural004,
+  resamples = stat_folds,
+  grid = neural_grid,
+  metrics = metric_set(rmse, mae, rsq)
+)
+
+write_rds(neural_tune, file = "data/tuned_models/neural.rds")
+neural_tuned <- read_rds(file = "data/tuned_models/neural.rds")
+
+neural_rmse <- show_best(neural_tuned, metric = "rmse", n = 1)$mean
+
+
+# 5. Pruned Decision Tree
+tree_model_005 <- decision_tree(
+  cost_complexity = tune(),
+  tree_depth = tune(),
+  min_n = tune()
+) %>%
+  set_engine("rpart") %>%
+  set_mode("regression")
+
+workflow_tree005 <- workflow() %>%
+  add_model(tree_model_005) %>%
+  add_recipe(capillaryReservoirs_recipe)
+
+tree_grid <- grid_regular(
+  cost_complexity(range = c(-5, -2), trans = log10_trans()),
+  tree_depth(range = c(2, 10)),
+  min_n(range = c(5, 30)),
+  levels = 5
+)
+
+tree_tune <- tune_grid(
+  workflow_tree005,
+  resamples = stat_folds,
+  grid = tree_grid,
+  metrics = metric_set(rmse, mae, rsq)
+)
+
+write_rds(tree_tune, "data/tuned_models/tree.rds")
+tree_tuned <- read_rds("data/tuned_models/tree.rds")
+
+tree_rmse <- show_best(tree_tuned, metric = "rmse", n = 1)$mean
+
+
+knn_tuned <- read_rds(file = "data/tuned_models/knn.rds")
+knn_rmse <- show_best(knn_tuned, metric = "rmse", n = 1)$mean
+boost_tuned <- read_rds(file = "data/tuned_models/boost.rds")
+boost_rmse <- show_best(boost_tuned, metric = "rmse", n = 1)$mean
+svm_tuned <- read_rds(file = "data/tuned_models/svm.rds")
+svm_rmse <- show_best(svm_tuned, metric = "rmse", n = 1)$mean
+neural_tuned <- read_rds(file = "data/tuned_models/neural.rds")
+neural_rmse <- show_best(neural_tuned, metric = "rmse", n = 1)$mean
+tree_tuned <- read_rds("data/tuned_models/tree.rds")
+tree_rmse <- show_best(tree_tuned, metric = "rmse", n = 1)$mean
+
+```
+
+
+
+
+## 4. Results of our Models
+
+### 4.01 Bar plot
+Now we compare the results of all of our models and see which ones performed the best.
+```{r}
+#data frame for all models' RMSEs
+all_models <- data.frame(Model = c(
+    "KNN",
+    "Boosted Trees",
+    "SVM",
+    "Neural Network",
+    "Pruned Decision Tree"
+  ),
+  RMSE = c(
+    knn_rmse,
+    boost_rmse,
+    svm_rmse,
+    neural_rmse,
+    tree_rmse
+  ))
+
+ 
+# tibble chart
+final_compare_tibble <- tibble(
+  Model = c(
+    "KNN",
+    "Boosted Trees",
+    "SVM",
+    "Neural Network",
+    "Pruned Decision Tree"),
+  RMSE = c(
+    knn_rmse,
+    boost_rmse,
+    svm_rmse,
+    neural_rmse,
+    tree_rmse)
+) %>%
+  arrange(RMSE)
+
+final_compare_tibble
+
+
+
+ggplot(all_models, aes(x = reorder(Model, RMSE), y = RMSE)) +
+  geom_bar(stat = "identity", aes(fill = Model)) +
+  scale_fill_brewer(palette = "Set2")
+```
+
+From the performance of the models on the cross-validation data, we can see that the neural network performed the best, followed by K-Nearest Neighbors model and the support vector machines model. Although the RMSE values of these models appear clustering around 0.19 to 0.25, a seemingly small range, we should consider the scales of most of the data are really small, and even a difference of 0.01 in RMSE indicates a significant improvement in performance.
+
+### 4.02 Model autoplots
+
+The autoplot in R allows us to visualize the effect of each of the tuned parameters on the performance of each model. In the autoplots, the performance of the models is measured by the RMSE (the lower the RMSE, the better the model has performed).
+```{r}
+autoplot(knn_tuned, metric = 'rmse')
+```
+
+The k-nearest neighbors model displays a general trend that averaging too many data points leads to increase in underfitting. The sharp decline in RMSE on the left side of the plot suggests a brief phase of overfitting; the model is also sensitive to noise and outliers when the number of neighbors is too small. The optimal prediction is at the lowest point on the curve, where the RMSE attains its minimum value.
+
+
+```{r}
+autoplot(boost_tuned, metric = 'rmse')
+```
+
+For the boosted tree model, increasing the learning rate while decreasing the size of nodes generally leads to higher RMSE values. Additionally, a reduction in the number of trees corresponds to increased RMSE, which inplies a case of overfitting that leads to worse predicting performance. The optimal prediction is in the facet with lowest learning rate, highest number of trees, and largest node size.
+
+```{r}
+autoplot(svm_tuned, metric = 'rmse')
+```
+
+The support vector machine model displays a pattern that shows increase in cost parameter results in decrease in RMSE. This indicates that raising the penalty for misclassified points gets better prediction results. However, the linear SVM appears to reach its maximum predictive capacity once the cost exceeds a certain threshold, and further increases shows no improvement in RMSE. The optimal prediction has a minimum RMSE value of approximately 0.235.
+
+```{r}
+autoplot(neural_tuned, metric = 'rmse')
+```
+
+The neural network model displays a pattern that as the number of hidden units increases, RMSE decreases. Similarly, increasing the number of epochs reduces both the initial RMSE values and their averages across runs. These trends suggest that to find out the optimal prediction we need to maximize both the number of hidden units and the number of epochs. it is worth noting that, in the facet with exactly 60 epochs, all starting values of rmse start at roughly 0.225, unlike other facets where starting values are much higher. Given that model performance improves and the lines exhibit greater overlap in facets with more than 60 epochs, the 60-epoch could be facet could be considered as an outlier.
+
+```{r}
+autoplot(tree_tuned, metric = 'rmse')
+```
+
+The pruned decision tree model displays a pattern that increasing the cost-complexity parameter leads to higher RMSE due to data underfitting. These trends suggest that to find out the optimal prediction we need to keep the cost-complexity parameter as small as possible. Additionally, a horizontal line is observed for the tree with a depth of 2, since a tree with a depth of 2 can only make a maximum of 3 splits. A depths this low restricts its ability to capture underlying patterns in the data, causing data underfitting that introduces higher RMSE.
+
+
+
+
+## 5. Results From the Best Model
+
+
+### 5.01 Finding the best model
+Based on the previous bar plot, the neural network has the lowest RMSE values. Since we learnt that neural network performed the best among all models, we now focus on finding its best tuned parameters.
+```{r}
+best_neural <- neural_tuned %>% 
+  collect_metrics() %>% 
+  arrange(mean) %>% 
+  slice(1)
+
+best_neural
+```
+
+The best model is a neural network model with a rmse of 0.146.  
+
+
+### 5.02 Fitting to training data
+Now we take that best model from the tuned random forest and fit it to the training data. This will train that random forest one more time on the entire training data set. Once we have fit and trained the random forest on the training data, it will be ready for testing.
+```{r}
+best_neural_train <- select_best(neural_tuned, metric = 'rmse')
+best_neural_train_workflow <- finalize_workflow(
+  workflow_neural004, best_neural_train)
+best_neural_train_fit <- fit(
+  best_neural_train_workflow, data = stat_train)
+
+write_rds(best_neural_train_fit, 
+          file = "data/final_data/final_train.rds")
+
+
+```
+
+
+
+### 5.03 Testing to training data
+
+```{r}
+best_neural_train_fit <- read_rds(file = "data/final_data/final_train.rds") 
+final_tibble <- predict(best_neural_train_fit, new_data = stat_test %>% select(-basin_soil_moist))
+final_tibble <- bind_cols(final_tibble, stat_test %>% select(basin_soil_moist))
+
+write_rds(final_tibble, file = "data/final_data/final_model.rds")
+
+final_tibble <- read_rds(file = "data/final_data/final_model.rds")
+final_metric <- metric_set(rmse)
+final_tibble_metrics <- final_metric(final_tibble, truth = basin_soil_moist, estimate = .pred)
+final_tibble_metrics
+
+```
+
+The resulting testing rmse of 0.195 is slightly higher than the training model's rmse of 0.146, which indicates the model performs worse on the testing data, but remains in expected error ranges. Our model model has generalized well and managed to explain some variation in the outcome.
+
+
+
+### 5.04 Plotting
+```{r}
+final_tibble %>% 
+  ggplot(aes(x = .pred, y = basin_soil_moist)) +
+  geom_point(alpha = 0.4) +
+  geom_abline(lty = 2) +
+  theme_grey() +
+  coord_obs_pred() +
+  labs(title = "predicted values vs. actual values")
+```
+
+Based on the plot, the points cluster closely around the line, which indicates that as the actual basin_soil_moist increases, our predictions accurately follow suit. However, the spread of the data points is the widest in the middle of the line.
+
+
+## 6. Conclusion
+
+After fitting and evaluating multiple models, the neural network emerged as the best model for predicting basin_soil_moist. This is expected since the multi-layer perceptron (MLP) method employed is specifically designed to predict complex, nonlinear relationships between inputs and outputs, which suits the interdependent nature of streamflow data provided here perfectly. When applied to the testing dataset, the neural network model produced a slightly worse, but nonetheless still very accurate result with low EMSE value. The neural network model is able to capture interactions through the weighted connections, giving itself advantages to find interconnected relationships vis-a-vis `basin_soil_moist` across all variables simultaneously.
+
+The model that did the worst is the boosted trees model. this may has something to do with the boosted trees model's preconceived notion that a single, dominant trend can be accurately estimated from the provided feature set, while in reality there are simply too many intercorrelations among the numerous predictor variables, and it is impossible for the boosted tree model to make effective generalization based on a limited subset of features.
+
+There are several avenues of improvement we can be looked into. First of all, incorporating those additional variables that were previously excluded due to exhibiting only a moderate correlation with `basin_soil_moist` could improve model performance. Second, further investigation into the variables influencing the bimodal distribution patterns observed in `basin_potet` and `basin_actet` may yield valuable insights. For instance, the `basin_potet` histogram exhibits two distinct peaks, indicating periods of high and low evapotranspiration within a statistical year, which may signal local seasonal hydrological phenomenon, such as intermittent rivers. Variables that may serve as proxies for such conditions, including `basin_total_storage` and `basin_pweqv` (which contain important features of snowpack water), could be integrated into future analyses of basin_soil_moist, thus potentially improving model accuracy.
+
+Overall, this research project helped me to to build my experience and skills with regression model building techniques, deepen my understanding on the possible applications of regression models and improve my familiarities with R packages, especially tidymodels.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

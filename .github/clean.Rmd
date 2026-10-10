@@ -1,0 +1,457 @@
+---
+title: "draftForFin"
+output: html_document
+---
+
+```{r}
+
+library(readxl)
+library(tidyverse)
+library(tidymodels)
+library(knitr)
+library(ISLR)
+library(ISLR2)
+library(discrim)
+library(poissonreg)
+library(corrr)
+library(corrplot)
+library(klaR)
+library(kknn)
+library(pROC)
+library(janitor)
+tidymodels_prefer()
+knitr::opts_chunk$set(echo = TRUE, message = FALSE,
+                      warning = FALSE)
+
+
+indent1 = '    '
+indent2 = '        '
+indent3 = '            '
+
+## data showcases
+surfaceWaterStat <- read_csv('data/prms_summaryDyn_new.csv')
+surfaceWaterStat %>%
+  head()
+
+### identify which columns contain only zeros
+which(colSums(surfaceWaterStat == 0) 
+      == nrow(surfaceWaterStat)
+)
+### remove
+surfaceWaterStat_nonzero <- surfaceWaterStat %>%
+    select(where(~ any(. != 0)))
+
+surfaceWaterStat_nonzero$runoff_cfs <- NULL
+surfaceWaterStat_nonzero$Date <- NULL
+
+surfaceWaterStat_nonzero <- surfaceWaterStat_nonzero %>% 
+  select(c("basin_potet", "basin_actet", "basin_dprst_evap",  "basin_perv_et", "basin_swrad", "basin_tmax", "basin_tmin", "basin_soil_rechr", "basin_soil_moist")) %>% 
+  clean_names()
+
+surfaceWaterStat_nonzero %>%
+  head()
+
+df_et <- surfaceWaterStat_nonzero %>%
+  mutate(moisture_ratio = basin_soil_moist / max(basin_soil_moist),
+         et_efficiency = basin_actet / basin_potet)
+
+
+## 80%
+set.seed(123)
+stat_split <- initial_split(
+  surfaceWaterStat_nonzero, 
+  prop=0.8, 
+  strata=basin_soil_moist
+  )
+stat_train <- training(stat_split)
+stat_test <- testing(stat_split)
+
+# creating recipte
+capillaryReservoirs_recipe <- recipe(basin_soil_moist ~ basin_actet + basin_potet + basin_dprst_evap + basin_perv_et + basin_swrad + basin_tmin + basin_tmax + basin_soil_rechr,
+                                     data = stat_train) %>%
+  step_dummy(all_nominal(), one_hot = TRUE) %>%
+  step_mutate( et_efficiency = 
+                 basin_actet / basin_potet) %>%
+  step_center(all_predictors()) %>% 
+  step_scale(all_predictors())
+
+# creating folds
+stat_folds <- vfold_cv(stat_train, v = 10, strata = basin_soil_moist)
+
+
+
+
+######## BIG SCARY MONSTER AHHHH
+######## BIG SCARY MONSTER AHHHH
+######## BIG SCARY MONSTER AHHHH
+
+# 1. KNN 
+knn_model_001 <- nearest_neighbor(
+  neighbors = tune()
+) %>% 
+  set_mode("regression") %>% 
+  set_engine("kknn")
+
+workflow_knn001 <- workflow() %>%
+  add_model(knn_model_001) %>%
+  add_recipe(capillaryReservoirs_recipe)
+
+knn_grid <- grid_regular(
+  neighbors(range = c(10, 80)),
+  levels = 5
+)
+
+knn_tune <- tune_grid(
+  workflow_knn001,
+  resamples = stat_folds,
+  grid = knn_grid,
+  metrics = metric_set(rmse, mae, rsq)
+)
+
+write_rds(knn_tune, file = "data/tuned_models/knn.rds")
+knn_tuned <- read_rds(file = "data/tuned_models/knn.rds")
+
+knn_rmse <- show_best(knn_tuned, metric = "rmse", n = 1)$mean
+
+# 2. gradient boosted tree, 
+boost_model_002 <- boost_tree(
+  trees = tune(),
+  min_n = tune(),
+  learn_rate = tune()
+) %>%
+  set_engine("xgboost") %>%
+  set_mode("regression")
+
+
+workflow_boost002 <- workflow() %>%
+  add_model(boost_model_002) %>%
+  add_recipe(capillaryReservoirs_recipe)
+
+boost_grid <- grid_regular(
+  trees(range = c(200, 500)),
+  min_n(range = c(2, 20)),
+  learn_rate(range = c(0.01,0.1)),
+  levels = 5
+)
+
+boost_tune <- tune_grid(
+  workflow_boost002,
+  resamples = stat_folds,
+  grid = boost_grid,
+  metrics = metric_set(rmse, mae, rsq)
+)
+
+write_rds(boost_tune, file = "data/tuned_models/boost.rds")
+boost_tuned <- read_rds(file = "data/tuned_models/boost.rds")
+
+boost_rmse <- show_best(boost_tuned, metric = "rmse", n = 1)$mean
+
+
+# 3. support vector machines, 
+support_vec_model_003 <- svm_linear(
+  cost = tune()
+) %>%
+  set_engine("kernlab") %>%
+  set_mode("regression")
+
+workflow_support003 <- workflow() %>%
+  add_model(support_vec_model_003) %>%
+  add_recipe(capillaryReservoirs_recipe)
+
+svm_grid <- grid_regular(
+  cost(range = c(-4, 1), trans = log10_trans()),
+  levels = 10
+)
+
+
+svm_tune <- tune_grid(
+  workflow_support003,
+  resamples = stat_folds,
+  grid = svm_grid,
+  metrics = metric_set(rmse, mae, rsq)
+)
+
+write_rds(svm_tune, file = "data/tuned_models/svm.rds")
+svm_tuned <- read_rds(file = "data/tuned_models/svm.rds")
+
+svm_rmse <- show_best(svm_tuned, metric = "rmse", n = 1)$mean
+
+
+# 4. a neural network. 
+neural_model_004 <- mlp(
+  hidden_units = tune(),
+  penalty = tune(),
+  epochs = tune()
+) %>%
+  set_engine("nnet") %>%
+  set_mode("regression")
+
+
+workflow_neural004 <- workflow() %>%
+  add_model(neural_model_004) %>%
+  add_recipe(capillaryReservoirs_recipe)
+
+neural_grid <- grid_regular(
+  hidden_units(range = c(1, 10)),
+  penalty(range = c(-3, -1)),
+  epochs(range = c(20, 100)),
+  levels = 5
+)
+
+neural_tune <- tune_grid(
+  workflow_neural004,
+  resamples = stat_folds,
+  grid = neural_grid,
+  metrics = metric_set(rmse, mae, rsq)
+)
+
+write_rds(neural_tune, file = "data/tuned_models/neural.rds")
+neural_tuned <- read_rds(file = "data/tuned_models/neural.rds")
+
+neural_rmse <- show_best(neural_tuned, metric = "rmse", n = 1)$mean
+
+
+# 5. Pruned Decision Tree
+tree_model_005 <- decision_tree(
+  cost_complexity = tune(),
+  tree_depth = tune(),
+  min_n = tune()
+) %>%
+  set_engine("rpart") %>%
+  set_mode("regression")
+
+workflow_tree005 <- workflow() %>%
+  add_model(tree_model_005) %>%
+  add_recipe(capillaryReservoirs_recipe)
+
+tree_grid <- grid_regular(
+  cost_complexity(range = c(-5, -2), trans = log10_trans()),
+  tree_depth(range = c(2, 10)),
+  min_n(range = c(5, 30)),
+  levels = 5
+)
+
+tree_tune <- tune_grid(
+  workflow_tree005,
+  resamples = stat_folds,
+  grid = tree_grid,
+  metrics = metric_set(rmse, mae, rsq)
+)
+
+write_rds(tree_tune, "data/tuned_models/tree.rds")
+tree_tuned <- read_rds("data/tuned_models/tree.rds")
+
+tree_rmse <- show_best(tree_tuned, metric = "rmse", n = 1)$mean
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+knn_tuned <- read_rds(file = "data/tuned_models/knn.rds")
+
+knn_rmse <- show_best(knn_tuned, metric = "rmse", n = 1)$mean
+boost_tuned <- read_rds(file = "data/tuned_models/boost.rds")
+
+boost_rmse <- show_best(boost_tuned, metric = "rmse", n = 1)$mean
+svm_tuned <- read_rds(file = "data/tuned_models/svm.rds")
+
+svm_rmse <- show_best(svm_tuned, metric = "rmse", n = 1)$mean
+neural_tuned <- read_rds(file = "data/tuned_models/neural.rds")
+
+neural_rmse <- show_best(neural_tuned, metric = "rmse", n = 1)$mean
+tree_tuned <- read_rds("data/tuned_models/tree.rds")
+
+tree_rmse <- show_best(tree_tuned, metric = "rmse", n = 1)$mean
+neural_model_004 <- mlp(
+  hidden_units = tune(),
+  penalty = tune(),
+  epochs = tune()
+) %>%
+  set_engine("nnet") %>%
+  set_mode("regression")
+
+workflow_neural004 <- workflow() %>%
+  add_model(neural_model_004) %>%
+  add_recipe(capillaryReservoirs_recipe)
+
+
+
+
+#data frame for all models' RMSEs
+all_models <- data.frame(Model = c(
+    "KNN",
+    "Boosted Trees",
+    "SVM",
+    "Neural Network",
+    "Pruned Decision Tree"
+  ),
+  RMSE = c(
+    knn_rmse,
+    boost_rmse,
+    svm_rmse,
+    neural_rmse,
+    tree_rmse
+  ))
+
+ 
+# tibble chart
+final_compare_tibble <- tibble(
+  Model = c(
+    "KNN",
+    "Boosted Trees",
+    "SVM",
+    "Neural Network",
+    "Pruned Decision Tree"),
+  RMSE = c(
+    knn_rmse,
+    boost_rmse,
+    svm_rmse,
+    neural_rmse,
+    tree_rmse)
+) %>%
+  arrange(RMSE)
+
+final_compare_tibble
+
+
+
+ggplot(all_models, aes(x = reorder(Model, RMSE), y = RMSE)) +
+  geom_bar(stat = "identity", aes(fill = Model)) +
+  scale_fill_brewer(palette = "Set2")
+
+
+
+autoplot(knn_tuned, metric = 'rmse')
+autoplot(boost_tuned, metric = 'rmse')
+autoplot(svm_tuned, metric = 'rmse')
+autoplot(neural_tuned, metric = 'rmse')
+autoplot(tree_tuned, metric = 'rmse')
+
+best_neural <- neural_tuned %>% 
+  collect_metrics() %>% 
+  arrange(mean) %>% 
+  slice(1)
+
+best_neural
+
+best_neural_train <- select_best(neural_tuned, metric = 'rmse')
+best_neural_train_workflow <- finalize_workflow(
+  workflow_neural004, best_neural_train)
+best_neural_train_fit <- fit(
+  best_neural_train_workflow, data = stat_train)
+
+write_rds(best_neural_train_fit, 
+          file = "data/final_data/final_train.rds")
+
+best_neural_train_fit <- read_rds(file = "data/final_data/final_train.rds") 
+final_tibble <- predict(best_neural_train_fit, new_data = stat_test %>% select(-basin_soil_moist))
+final_tibble <- bind_cols(final_tibble, stat_test %>% select(basin_soil_moist))
+
+write_rds(final_tibble, file = "data/final_data/final_model.rds")
+
+final_tibble <- read_rds(file = "data/final_data/final_model.rds")
+final_metric <- metric_set(rmse)
+final_tibble_metrics <- final_metric(final_tibble, truth = basin_soil_moist, estimate = .pred)
+final_tibble_metrics
+
+final_tibble %>% 
+  ggplot(aes(x = .pred, y = basin_soil_moist)) +
+  geom_point(alpha = 0.4) +
+  geom_abline(lty = 2) +
+  theme_grey() +
+  coord_obs_pred() +
+  labs(title = "Predicted Values vs. Actual Values")
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+The autoplot in R allows us to visualize the effect of each of the tuned parameters on the performance of each model. In the autoplots, the performance of the models is measured by the RMSE (the lower the RMSE, the better the model has performed).
+
+I. The k-nearest neighbors model displays, in general, a trend that that averaging too many data points leads to an increase in underfitting. the sharp dive on the left side indicates a brief overfitting: the model is sensitive to possible outliers and noise when there aren't enough neighbors. we are advised from the plot to select its lowest point, where rmse value is the lowest, as the best predictor.
+
+II. The boosted tree model displays, in general, an increase in learning rate and decrease in size of nodes leads to an increase in rmse values. we also see that as number of trees decrease, rmse values increase, which indicates overfitting leads to worse predicting performance; we therefore conclude we should select from the facet with lowest learning rate, lowest number of trees and highest size of nodes.
+
+III. The support vector machines model displays a pattern that shows when we increase the value of cost, the value of rmse decreases dramatically, which means we should raise penalty for misclassified points as much as possible to get a better prediction result. we also see that the linear SVM has reached its maximum predictive capacity for this dataset when the cost increase to a certain threshold. Increasing the cost further doesn't improve the RMSE because a straight line (linear kernel) can only do so much. The model has found the "optimal" linear hyperplane with a minimum rmse value of around 0.235.
+
+IV. The neural nnetwork model displays a pattern that as number of hidden units increase, the value of rmse decreases. we also notice that as numbers of epochs increases, both the starting values of rmse and their average values decreases; therefore, to best select the prediction, we should raise number of hidden units and numbers of epochs as much as possible. on the other hand, in the facet with exactly 60 epochs, all starting values of rmse start at roughly 0.225, unlike other facets where there is a sharp drop from much higher starting rmse value. since the lines, on average, performs better and overlap greater in facets with more than 60 epochs,  the facet with exactly 60 epochs could be considered as an outlier.
+
+V. The pruned decision tree model displays a pattern that once the cost-complexity parameter increases, the rmse increases due to data underfitting, suggesting us to keep the cost-complexity parameter as small as possible for better prediction.
+we also see there is a horizontal line for the tree with a depth of 2, which is reasonable since a tree with a depth of 2 can only make a maximum of 3 splits, causing data underfitting that introduces high rmse.
+
+
+
+
+
+
+
+k-Nearest Neighbors Model
+The k-nearest neighbors model exhibits a general trend whereby averaging over an excessive number of neighbors tends to increase underfitting. The sharp decline in RMSE on the left side of the plot suggests a brief phase of overfitting, wherein the model becomes overly sensitive to noise and outliers when the number of neighbors is too small. The optimal configuration is indicated by the lowest point on the curve, where the RMSE attains its minimum value.
+
+II. Boosted Tree Model
+For the boosted tree model, increasing the learning rate while decreasing the size of nodes generally leads to higher RMSE values. Additionally, a reduction in the number of trees corresponds to increased RMSE, suggesting that overfitting adversely affects predictive performance. The optimal parameter combination is therefore observed in the facet characterized by the lowest learning rate, the highest number of trees, and the largest node size.
+
+III. Support Vector Machine Model
+The support vector machine model demonstrates a pattern wherein increasing the cost parameter results in a substantial decrease in RMSE. This indicates that raising the penalty for misclassified points enhances predictive accuracy. However, the linear SVM appears to reach its maximum predictive capacity once the cost exceeds a certain threshold; further increases yield no improvement in RMSE, as the linear kernel imposes inherent constraints on model flexibility. The optimal model achieves a minimum RMSE of approximately 0.235.
+
+IV. Neural Network Model
+The neural network model displays a clear pattern: as the number of hidden units increases, RMSE decreases. Similarly, increasing the number of epochs reduces both the initial RMSE values and their averages across runs. These trends suggest that optimal predictive performance is achieved by maximizing both the number of hidden units and the number of epochs. Notably, the facet corresponding to exactly 60 epochs exhibits an atypical pattern, with all initial RMSE values starting at approximately 0.225, in contrast to other facets where starting values are considerably higher. Given that model performance improves and the lines exhibit greater overlap in facets with more than 60 epochs, the 60-epoch configuration may be regarded as an outlier, potentially due to convergence instability or stochastic variation during training.
+
+V. Pruned Decision Tree Model
+The pruned decision tree model reveals that increasing the cost-complexity parameter leads to higher RMSE, indicative of underfitting. This suggests that the cost-complexity parameter should be kept as small as possible to optimize predictive performance. Additionally, a horizontal line is observed for the tree with a depth of 2, which is expected given that such a tree can perform at most three splits. This limited structural capacity restricts its ability to capture underlying patterns in the data, resulting in underfitting and elevated RMSE.
+
+
+
+ 
+
+
+
+
+
+
+
+
+
+
+, the boosted trees model exhibited the poorest predictive performance. This may be attributable to the model's underlying assumption that a single, dominant trend can be accurately estimated from the provided feature set. In reality, the high degree of intercorrelation among the numerous predictor variables likely undermines the model's ability to generalize, particularly when relying on a limited subset of features.
+
+Several avenues for future improvement warrant consideration. First, incorporating additional variables that exhibit moderate correlations with basin_soil_moist could enhance model performance. Second, further investigation into the variables influencing the bimodal distribution patterns observed in basin_potet and basin_actet may yield valuable insights. For instance, the presence of two distinct peaks in the basin_potet bar plot suggests the influence of local hydrological conditions that differentiate periods of high and low evapotranspiration within a statistical year—potentially indicating seasonal hydrological phenomena such as intermittent rivers. 
+
+
+Variables that may serve as proxies for such conditions, including basin_total_storage and basin_pweqv (which pertains to snow water equivalent), could be integrated into future analyses of basin_soil_moist, thereby potentially improving model accuracy.
+
+Overall, this research project has contributed substantially to building experience and proficiency in regression modeling techniques, deepening understanding of the practical applications of such models, and enhancing familiarity with R packages—particularly those within the tidymodels ecosystem.
+
+
+
+
+
+
+
+

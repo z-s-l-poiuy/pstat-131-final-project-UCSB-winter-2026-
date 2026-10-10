@@ -1,0 +1,81 @@
+---
+title: Nineteen Years Later
+author: Harry Potter
+date: July 31, 2016
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+  pdf_document:
+    toc: true
+    
+---
+
+```{r setup, include=FALSE}
+library(readxl)
+library(tidyverse)
+library(tidymodels)
+library(knitr)
+library(ISLR)
+library(ISLR2)
+library(discrim)
+library(poissonreg)
+library(corrr)
+library(corrplot)
+library(klaR)
+library(kknn)
+library(pROC)
+
+tidymodels_prefer()
+
+
+
+knitr::opts_chunk$set(echo = TRUE, message = FALSE,
+                      warning = FALSE)
+
+# indent settings
+indent1 = '    '
+indent2 = '        '
+indent3 = '            '
+
+```
+## Introduction
+
+
+### Research background and aim of the project
+lol
+
+## 1. Exploratory Data Analysis
+
+### 1.01 Cleaning Data and choosing variables of interest
+
+We first import the data, and tidy it by removing rows and columns that does not fit the modern excel spreadsheet format.
+```{r}
+surfaceWaterStat <- read_csv('data/prms_summaryDyn_new.csv')
+
+surfaceWaterStat_nonzero <- surfaceWaterStat %>%
+    select(where(~ any(. != 0)))
+
+surfaceWaterStat_nonzero$runoff_cfs <- NULL
+surfaceWaterStat_nonzero$Date <- NULL
+
+
+corr_trix_1 <- cor(surfaceWaterStat_nonzero)
+corrplot(corr_trix_1, 
+         order = 'AOE', 
+         col = COL2("PiYG")
+         )
+
+
+
+
+```
+
+<center>
+![Fig.4 the full correlation plot ](images/Rplot_1.png){width="700"}
+</center>
+<br>
+oi oi baguette
+
+
